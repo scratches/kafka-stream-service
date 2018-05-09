@@ -6,7 +6,10 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 
+import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
 import io.projectriff.grpc.function.FunctionProtos.Message;
+import io.projectriff.grpc.function.ReactorMessageFunctionGrpc;
 
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -19,8 +22,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
+import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.util.SocketUtils;
 
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
@@ -32,6 +38,8 @@ import reactor.kafka.sender.SenderOptions;
 import reactor.kafka.sender.SenderRecord;
 
 @SpringBootApplication
+@ConfigurationProperties("grpc")
+@ConditionalOnProperty(prefix = "grpc", name = "enabled", matchIfMissing = true)
 public class StreamsApplication implements Closeable {
 
 	private CountDownLatch latch = new CountDownLatch(1);
@@ -45,6 +53,38 @@ public class StreamsApplication implements Closeable {
 	@Override
 	public void close() {
 		latch.countDown();
+	}
+
+	/**
+	 * The port to connect to for gRPC connections.
+	 */
+	private int port = 10382;
+	
+	/**
+	 * The host name to connect to the gRPC server.
+	 */
+	private String host = "localhost";
+
+	/**
+	 * Flag to enable or disable the gRPC server.
+	 */
+	private boolean enabled = true;
+
+	public int getPort() {
+		return port;
+	}
+
+	public void setPort(int port) {
+		port = port > 0 ? port : SocketUtils.findAvailableTcpPort();
+		this.port = port;
+	}
+
+	public boolean isEnabled() {
+		return enabled;
+	}
+
+	public void setEnabled(boolean enabled) {
+		this.enabled = enabled;
 	}
 
 	@Bean
@@ -101,14 +141,22 @@ public class StreamsApplication implements Closeable {
 	}
 
 	private Flux<Message> transform(Flux<Message> messages) {
+		if (this.enabled) {
+			ManagedChannel channel = ManagedChannelBuilder.forAddress(host, getPort())
+					.usePlaintext(true).build();
+			ReactorMessageFunctionGrpc.ReactorMessageFunctionStub stub = ReactorMessageFunctionGrpc
+					.newReactorStub(channel);
+			return Flux.create(emitter -> {
+				stub.call(messages).subscribe(message -> emitter.next(message));
+			});
+		}
 		return messages;
 	}
 
-	private SenderRecord<byte[], Message, byte[]> output(
-			Message record) {
-//		throw new RuntimeException("Planned");
-		return SenderRecord.create(
-				new ProducerRecord<>("words", (byte[]) null, record), null);
+	private SenderRecord<byte[], Message, byte[]> output(Message record) {
+		// throw new RuntimeException("Planned");
+		return SenderRecord.create(new ProducerRecord<>("words", (byte[]) null, record),
+				null);
 	}
 
 	public static void main(String[] args) {
