@@ -97,14 +97,18 @@ public class StreamsApplication implements Closeable {
 
 	private Flux<SenderRecord<byte[], Message, byte[]>> extract(
 			Flux<ConsumerRecord<byte[], Message>> records) {
-		return records.map(this::output).log();
+		return transform(records.map(ConsumerRecord::value)).map(this::output).log();
+	}
+
+	private Flux<Message> transform(Flux<Message> messages) {
+		return messages;
 	}
 
 	private SenderRecord<byte[], Message, byte[]> output(
-			ConsumerRecord<byte[], Message> record) {
+			Message record) {
 //		throw new RuntimeException("Planned");
 		return SenderRecord.create(
-				new ProducerRecord<>("words", (byte[]) null, record.value()), null);
+				new ProducerRecord<>("words", (byte[]) null, record), null);
 	}
 
 	public static void main(String[] args) {
