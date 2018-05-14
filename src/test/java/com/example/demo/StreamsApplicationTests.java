@@ -8,6 +8,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.test.context.junit4.SpringRunner;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 @RunWith(SpringRunner.class)
 @SpringBootTest
 public class StreamsApplicationTests {
@@ -17,6 +19,7 @@ public class StreamsApplicationTests {
 
 	@Test
 	public void contextLoads() {
+		assertThat(context).isNotNull();
 	}
 
 }

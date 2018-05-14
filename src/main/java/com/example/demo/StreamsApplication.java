@@ -22,7 +22,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -39,7 +38,6 @@ import reactor.kafka.sender.SenderRecord;
 
 @SpringBootApplication
 @ConfigurationProperties("grpc")
-@ConditionalOnProperty(prefix = "grpc", name = "enabled", matchIfMissing = true)
 public class StreamsApplication implements Closeable {
 
 	private CountDownLatch latch = new CountDownLatch(1);
@@ -70,6 +68,14 @@ public class StreamsApplication implements Closeable {
 	 */
 	private boolean enabled = true;
 
+	public String getHost() {
+		return this.host;
+	}
+
+	public void setHost(String host) {
+		this.host = host;
+	}
+
 	public int getPort() {
 		return port;
 	}
@@ -94,6 +100,8 @@ public class StreamsApplication implements Closeable {
 		kafka.getConsumer().setValueDeserializer(MessageDeserializer.class);
 		Map<String, Object> props = kafka.buildConsumerProperties();
 		ReceiverOptions<byte[], Message> options = ReceiverOptions.create(props);
+		options.consumerProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+		options.consumerProperty(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
 		options.consumerProperty(ConsumerConfig.ISOLATION_LEVEL_CONFIG, "read_committed");
 		options.subscription(Arrays.asList("uppercase"));
 		return options;
@@ -111,7 +119,17 @@ public class StreamsApplication implements Closeable {
 
 	@Bean
 	public CommandLineRunner runner() {
-		return this::run;
+		return args -> {
+			new Thread(() -> {
+				try {
+					StreamsApplication.this.run(args);
+				}
+				catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+					throw new IllegalStateException(e);
+				}
+			}).start();
+		};
 	}
 
 	private void run(String... args) throws InterruptedException {
@@ -120,7 +138,7 @@ public class StreamsApplication implements Closeable {
 		KafkaSender<byte[], Message> sender = KafkaSender.create(senderOptions);
 		try {
 			disposable = receiver.receiveExactlyOnce(sender.transactionManager())
-					.concatMap(records -> sender.send(extract(records))
+					.concatMap(records -> sender.send(extract(records.log()))
 							.concatWith(sender.transactionManager().commit()))
 					.onErrorResume(
 							e -> sender.transactionManager().abort().then(Mono.error(e)))
@@ -155,7 +173,7 @@ public class StreamsApplication implements Closeable {
 
 	private SenderRecord<byte[], Message, byte[]> output(Message record) {
 		// throw new RuntimeException("Planned");
-		return SenderRecord.create(new ProducerRecord<>("words", (byte[]) null, record),
+		return SenderRecord.create(new ProducerRecord<>("replies", (byte[]) null, record),
 				null);
 	}
 

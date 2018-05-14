@@ -1,0 +1,28 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  labels:
+    function: uppercase
+  name: streams
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      topic: uppercase
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        topic: uppercase
+      name: uppercase
+    spec:
+      containers:
+      - image: projectriff/streams:0.0.7-snapshot
+        name: main
+        args:
+        - --grpc.host=uppercase
+        - --spring.kafka.bootstrap-servers=projectriff-kafka.riff-system:9092
