@@ -1,10 +1,12 @@
 package com.example.demo;
 
 import java.io.Closeable;
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
@@ -40,24 +42,17 @@ import reactor.kafka.sender.SenderRecord;
 @ConfigurationProperties("grpc")
 public class StreamsApplication implements Closeable {
 
-	private CountDownLatch latch = new CountDownLatch(1);
-
 	@Autowired
 	private ReceiverOptions<byte[], Message> receiverOptions;
 
 	@Autowired
 	private SenderOptions<byte[], Message> senderOptions;
 
-	@Override
-	public void close() {
-		latch.countDown();
-	}
-
 	/**
 	 * The port to connect to for gRPC connections.
 	 */
 	private int port = 10382;
-	
+
 	/**
 	 * The host name to connect to the gRPC server.
 	 */
@@ -67,6 +62,8 @@ public class StreamsApplication implements Closeable {
 	 * Flag to enable or disable the gRPC server.
 	 */
 	private boolean enabled = true;
+
+	private volatile boolean closed;
 
 	public String getHost() {
 		return this.host;
@@ -134,28 +131,49 @@ public class StreamsApplication implements Closeable {
 
 	private void run(String... args) throws InterruptedException {
 		Disposable disposable = null;
-		KafkaReceiver<byte[], Message> receiver = KafkaReceiver.create(receiverOptions);
-		KafkaSender<byte[], Message> sender = KafkaSender.create(senderOptions);
-		try {
-			disposable = receiver.receiveExactlyOnce(sender.transactionManager())
-					.concatMap(records -> sender.send(extract(records.log()))
-							.concatWith(sender.transactionManager().commit()))
-					.onErrorResume(
-							e -> sender.transactionManager().abort().then(Mono.error(e)))
-					.subscribe();
-			latch.await();
-		}
-		finally {
-			if (disposable != null) {
-				disposable.dispose();
+		AtomicBoolean failed = new AtomicBoolean(false);
+		while (!closed) {
+			SenderOptions<byte[], Message> options = SenderOptions
+					.create(senderOptions.producerProperties());
+			if (failed.get()) {
+				options.maxInFlight(1);
+			}
+			KafkaReceiver<byte[], Message> receiver = KafkaReceiver
+					.create(receiverOptions);
+			KafkaSender<byte[], Message> sender = KafkaSender.create(options);
+			try {
+				CountDownLatch latch = new CountDownLatch(1);
+				disposable = receiver.receiveExactlyOnce(sender.transactionManager())
+						.concatMap(records -> sender.send(extract(records.log()))
+								.concatWith(
+										sender.transactionManager().commit()
+										))
+						.onErrorResume(e -> {
+							if (failed.compareAndSet(false, true)) {
+								return sender.transactionManager().abort()
+										.then(Mono.error(e));
+							}
+							else {
+								// Already failed. There should be no outgoing messages.
+								return sender.transactionManager().commit();
+							}
+						}).doOnComplete(() -> failed.set(false))
+						.doOnTerminate(() -> 
+						latch.countDown()
+								).subscribe();
+				latch.await();
+			}
+			finally {
+				if (disposable != null) {
+					disposable.dispose();
+				}
 			}
 		}
-
 	}
 
 	private Flux<SenderRecord<byte[], Message, byte[]>> extract(
 			Flux<ConsumerRecord<byte[], Message>> records) {
-		return transform(records.map(ConsumerRecord::value)).map(this::output).log();
+		return transform(records.map(ConsumerRecord::value)).map(this::output);
 	}
 
 	private Flux<Message> transform(Flux<Message> messages) {
@@ -179,6 +197,11 @@ public class StreamsApplication implements Closeable {
 
 	public static void main(String[] args) {
 		SpringApplication.run(StreamsApplication.class, args);
+	}
+
+	@Override
+	public void close() throws IOException {
+		this.closed = true;
 	}
 
 }
